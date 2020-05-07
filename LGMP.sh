@@ -97,7 +97,7 @@ parted $disk mktable $tableType > /dev/null 2>&1
 
 # get information about desired sizes
 totalRAM=$(cat /proc/meminfo | head -n1 | grep -oP "\d+.*" | tr -d ' B' | tr 'a-z' 'A-Z' | numfmt --from iec --to iec --format "%.f")
-read -p "Size for /boot [2G]: " boot
+read -p "Size for /boot [1G]: " boot
 isEFI && read -p "Size for /boot/efi [100M]: " efi
 read -p "Size for LVM [remaining disk space]: " lvm
 read -p "Size for swap in LVM [$totalRAM]: " swap
@@ -122,7 +122,7 @@ hasKeyfile && dd if=/dev/urandom of="${keyfile}" bs=${keyfileSize} count=1 2> /d
 
 clear
 # fill in the blanks with default values
-parts="efi=100M boot=2G lvm=-1MB swap=${totalRAM} root=32G home=100%"
+parts="efi=100M boot=1G lvm=-1MB swap=${totalRAM} root=32G home=100%"
 for part in $parts
 do
 	name=$(cut -f1 -d= <<< $part)
