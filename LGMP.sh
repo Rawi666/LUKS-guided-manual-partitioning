@@ -100,7 +100,6 @@ totalRAM=$(cat /proc/meminfo | head -n1 | grep -oP "\d+.*" | tr -d ' B' | tr 'a-
 read -p "Size for /boot [1G]: " boot
 isEFI && read -p "Size for /boot/efi [100M]: " efi
 read -p "Size for LVM [remaining disk space]: " lvm
-read -p "Size for swap in LVM [$totalRAM]: " swap
 read -p "Size for / (root) in LVM [32G]: " root
 read -p "Percent of remaining LVM space to use for /home [100%]: " home
 echo
@@ -122,7 +121,7 @@ hasKeyfile && dd if=/dev/urandom of="${keyfile}" bs=${keyfileSize} count=1 2> /d
 
 clear
 # fill in the blanks with default values
-parts="efi=100M boot=1G lvm=-1MB swap=${totalRAM} root=32G home=100%"
+parts="efi=100M boot=1G lvm=-1MB root=32G home=100%"
 for part in $parts
 do
 	name=$(cut -f1 -d= <<< $part)
@@ -200,8 +199,6 @@ echo -n "$luksPass" | cryptsetup luksOpen ${luksPart} ${cryptMapper} && echo -e 
 echo "Setting up LVM:"
 pvcreate /dev/mapper/${cryptMapper} > /dev/null 2>&1
 vgcreate vg0 /dev/mapper/${cryptMapper} > /dev/null 2>&1
-echo -n "  Creating ${swap} swap logical volume ... "
-lvcreate -n swap -L ${swap} vg0 > /dev/null 2>&1 && echo -e "${green}done${normalText}" || echo -e "${red}failed${normalText}"
 echo -n "  Creating ${root} root logical volume ... "
 lvcreate -n root -L ${root} vg0 > /dev/null 2>&1 && echo -e "${green}done${normalText}" || echo -e "${red}failed${normalText}"
 homeSpace=$(bc <<< "$(vgdisplay --units b | grep Free | awk '{print $7}') * $(tr -d '%' <<< $home) / 100" | numfmt --to=iec)
@@ -209,7 +206,7 @@ echo -n "  Creating ${homeSpace} home logical volume ... "
 lvcreate -n home -l +${home}free vg0 > /dev/null 2>&1 && echo -e "${green}done${normalText}" || echo -e "${red}failed${normalText}"
 
 # stage one complete; pause and wait for user to perform installation
-echo -e "${yellow}${boldText}\n\nAt this point, you should KEEP THIS WINDOW OPEN and start the installation \nprocess. When you reach the \"Installation type\" page, select \"Something else\" \nand continue to manual partition setup.\n  ${bootPart} should be used as ext2 for /boot\n$(isEFI && echo "  ${efiPart} should be used as EFI System Partition\n")  /dev/mapper/vg0-home should be used as ext4 for /home\n  /dev/mapper/vg0-root should be used as ext4 for /\n  /dev/mapper/vg0-swap should be used as swap\n  $disk should be selected as the \"Device for boot loader installation\"${normalText}"
+echo -e "${yellow}${boldText}\n\nAt this point, you should KEEP THIS WINDOW OPEN and start the installation \nprocess. When you reach the \"Installation type\" page, select \"Something else\" \nand continue to manual partition setup.\n  ${bootPart} should be used as ext2 for /boot\n$(isEFI && echo "  ${efiPart} should be used as EFI System Partition\n")  /dev/mapper/vg0-home should be used as ext4 for /home\n  /dev/mapper/vg0-root should be used as ext4 for /\n  $disk should be selected as the \"Device for boot loader installation\"${normalText}"
 echo
 echo -e "${boldText}After installation, once you've chosen the option to continue testing, press     [Enter] in this window.${normalText}"
 read -s && echo
@@ -461,7 +458,7 @@ umount /mnt
 echo -e "${green}done${normalText}"
 
 # stage one complete; pause and wait for user to perform installation
-echo -e "\n\nAt this point, you should KEEP THIS WINDOW OPEN and start the installation \nprocess. When you reach the \"Installation type\" page, select \"Something else\" \nand continue to manual partition setup, selecting the option to format \npartitions when available (except /home).\n  ${bootPart} should be used as ext2 for /boot\n\$(isEFI && echo "  ${efiPart} should be used as EFI System Partition\n")  /dev/mapper/vg0-home should be used as ext4 for /home (DO NOT FORMAT)\n  /dev/mapper/vg0-root should be used as ext4 for /\n  /dev/mapper/vg0-swap should be used as swap\n  $disk should be selected as the \"Device for boot loader installation\""
+echo -e "\n\nAt this point, you should KEEP THIS WINDOW OPEN and start the installation \nprocess. When you reach the \"Installation type\" page, select \"Something else\" \nand continue to manual partition setup, selecting the option to format \npartitions when available (except /home).\n  ${bootPart} should be used as ext2 for /boot\n\$(isEFI && echo "  ${efiPart} should be used as EFI System Partition\n")  /dev/mapper/vg0-home should be used as ext4 for /home (DO NOT FORMAT)\n  /dev/mapper/vg0-root should be used as ext4 for /\n  $disk should be selected as the \"Device for boot loader installation\""
 echo
 read -sp "After installation, once you've chosen the option to continue testing, press    [Enter] in this window." && echo
 
