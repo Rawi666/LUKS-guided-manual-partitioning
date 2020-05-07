@@ -273,8 +273,7 @@ echo '#!/bin/bash
 mount -t proc proc /proc
 mount -t sysfs sys /sys
 mount -t devpts devpts /dev/pts
-update-initramfs -k all -c
-update-grub > /dev/null 2>&1' > /mnt/boot-update.sh
+update-initramfs -k all -c' > /mnt/boot-update.sh
 chmod +x /mnt/boot-update.sh
 chroot /mnt "./boot-update.sh"
 rm /mnt/boot-update.sh
@@ -488,8 +487,7 @@ echo '#!/bin/bash
 mount -t proc proc /proc
 mount -t sysfs sys /sys
 mount -t devpts devpts /dev/pts
-update-initramfs -k all -c
-update-grub > /dev/null 2>&1' > /mnt/boot-update.sh
+update-initramfs -k all -c' > /mnt/boot-update.sh
 chmod +x /mnt/boot-update.sh
 chroot /mnt "./boot-update.sh"
 rm /mnt/boot-update.sh
