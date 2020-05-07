@@ -183,7 +183,7 @@ echo "Setting up encryption:"
 isEFI && luksPart=$(getDiskPartitionByNumber 3) || luksPart=$(getDiskPartitionByNumber 2)
 cryptMapper="${luksPart/\/dev\/}_crypt"
 echo -en "  Encrypting ${luksPart} with your passphrase ... "
-echo -n "${luksPass}" | cryptsetup luksFormat -c aes-xts-plain64 -h sha512 -s 512 --iter-time 5000 --use-random -S 1 -d - ${luksPart}
+echo -n "${luksPass}" | cryptsetup luksFormat -c aes-xts-plain64 -h sha512 -s 256 --iter-time 5000 --use-random -S 1 -d - ${luksPart}
 echo -e "${green}done${normalText}"
 if hasKeyfile; then
 	echo -e "  ${boldText}We're going to need some random data for this next step. If it takes long, try  moving the mouse around or typing on the keyboard in a different window.${normalText}"
