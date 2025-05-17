@@ -63,7 +63,7 @@ do
 	echo -n "Closing LUKS device: $dev ... "
 	cryptsetup close $dev && echo -e "${green}done${normalText}" || echo -e "${red}failed${normalText}"
 done
-	
+
 # function to convert things like 2G or 1M into bytes
 bytes() {
 	num=${1:-0}
@@ -133,7 +133,7 @@ grep -q "%" <<< ${home} || home="${home}%"
 # create physical partitions
 clear
 offset="1M"	#offset for first partition
-physicalParts="boot:ext2 efi:fat16 lvm"
+physicalParts="boot:ext4 efi:fat16 lvm"
 index=$(bytes $offset)
 for part in ${physicalParts}
 do
@@ -164,13 +164,13 @@ getDiskPartitionByNumber() {
 		# partitions for this disk follow a SATA, IDE, SCSI naming standard
 		part="${disk}${partNum}"
 	fi
-	
+
 	# wait until partition is visible to the system; fixes NVMe race condition following partition creation
 	while [ ! -e "${part}" ]
 	do
 		sleep .5
 	done
-	
+
 	echo "$part"
 }
 
@@ -205,6 +205,10 @@ homeSpace=$(bc <<< "$(vgdisplay --units b | grep Free | awk '{print $7}') * $(tr
 echo -n "  Creating ${homeSpace} home logical volume ... "
 lvcreate -n home -l +${home}free vg0 > /dev/null 2>&1 && echo -e "${green}done${normalText}" || echo -e "${red}failed${normalText}"
 
+cryptsetup close vg0-home
+cryptsetup close vg0-root
+cryptsetup close sda3_crypt
+
 # stage one complete; pause and wait for user to perform installation
 echo -e "${yellow}${boldText}\n\nAt this point, you should KEEP THIS WINDOW OPEN and start the installation \nprocess. When you reach the \"Installation type\" page, select \"Something else\" \nand continue to manual partition setup.\n  ${bootPart} should be used as ext2 for /boot\n$(isEFI && echo "  ${efiPart} should be used as EFI System Partition\n")  /dev/mapper/vg0-home should be used as ext4 for /home\n  /dev/mapper/vg0-root should be used as ext4 for /\n  $disk should be selected as the \"Device for boot loader installation\"${normalText}"
 echo
@@ -214,70 +218,13 @@ read -s && echo
 
 #---------------------------------------------------begin stage two---------------------------------------------------#
 
-echo
-
-# query for trim usage
-echo -e "If you are installing to an SSD, you can enable trim. Beware, some SSD\nmanufacturers advise against the use of trim with their drives! The use of trim\nwith encryption also presents some security concerns in that, while it may not\nexpose encrypted data, it may expose information about encrypted data. If you\nare unsure, don't enable, and be sure to check your manufacturer\nrecommendations. Also, if you plan to use LVM snapshots, do not enable trim."
-read -p "Enable trim [y/N]: " trim
-doTrim() { [ "${trim,,}" == 'y' ] || return -1; }
-
-# mount stuff for chroot
-echo -n "Mounting the installed system ... "
-mount /dev/vg0/root /mnt
-mount /dev/vg0/home /mnt/home
-mount ${bootPart} /mnt/boot
-isEFI && mount ${efiPart} /mnt/boot/efi
-mount --bind /dev /mnt/dev
-mount --bind /run/lvm /mnt/run/lvm
-echo -e "${green}done${normalText}"
-
-# create crypttab entry
-echo -n "Creating /etc/crypttab entry ... "
-luksUUID="$(blkid | grep $luksPart | tr -d '"' | grep -oP "\bUUID=[0-9a-f\-]+")"
-echo -e "${cryptMapper}\t${luksUUID}\tnone\tluks" > /mnt/etc/crypttab
-chmod 600 /mnt/etc/crypttab
-echo -e "${green}done${normalText}"
-
-# enable trim if requested
-# trim implemented using instructions found at http://blog.neutrino.es/2013/howto-properly-activate-trim-for-your-ssd-on-linux-fstrim-lvm-and-dmcrypt/
-if doTrim; then
-	echo -n "Enabling trim ... "
-	# enable trim for LUKS
-	sed -i 's/luks$/luks,discard/' /etc/crypttab
-
-	# enable trim in LVM
-	lineStr="$(grep -nP "issue_discards ?=" /etc/lvm/lvm.conf )"
-	lineNum=$(cut -f1 -d: <<< "$lineStr")
-	replaceText="$(cut -f2 -d: <<< "$lineStr" | tr -d '#' | sed 's/issue_discards.*/issue_discards = 1/')"
-	sed -i "${lineNum}s/.*/$replaceText/" /etc/lvm/lvm.conf
-	
-	# enable weekly fstrim
-	allParts="/ /boot /home $(isEFI && echo "/boot/efi")"
-	cat << EOF > /etc/cron.weekly/dofstrim
-#! /bin/sh
-for mount in $allParts
-do
-	fstrim \$mount
-done
-EOF
-	chmod 755 /etc/cron.weekly/dofstrim
-	echo -e "${green}done${normalText}"
-fi
-
-# chroot and update the boot files
-echo "Updating your boot files:"
-echo '#!/bin/bash
-mount -t proc proc /proc
-mount -t sysfs sys /sys
-mount -t devpts devpts /dev/pts
-update-initramfs -k all -c' > /mnt/boot-update.sh
-chmod +x /mnt/boot-update.sh
-chroot /mnt "./boot-update.sh"
-rm /mnt/boot-update.sh
+lineStr="$(grep -nP "issue_discards ?=" /mnt/sysroot/etc/lvm/lvm.conf )"
+lineNum=$(cut -f1 -d: <<< "$lineStr")
+replaceText="$(cut -f2 -d: <<< "$lineStr" | tr -d '#' | sed 's/issue_discards.*/issue_discards = 1/')"
+sed -i "${lineNum}s/.*/$replaceText/" /mnt/sysroot/etc/lvm/lvm.conf
 
 # save some files to the installed users desktop
-user=$(cat /mnt/etc/passwd | grep "1000:1000" | cut -f1 -d:)
-dest=/mnt/home/$user/Desktop
+dest=/mnt/sysroot/home/luks
 mkdir -p "$dest"
 
 # save a backup of the LUKS header
@@ -296,7 +243,7 @@ echo -e "<!DOCTYPE html>
 				background-image: url('data:image/png;base64,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');
 				font-family: sans-serif;
 			}
-			
+
 			.container {
 				width: 60%;
 				min-width: 700px;
@@ -304,7 +251,7 @@ echo -e "<!DOCTYPE html>
 				border: 2px solid darkblue;
 				margin: auto;
 			}
-			
+
 			.header {
 				font-size: 2em;
 				font-weight: bold;
@@ -312,32 +259,32 @@ echo -e "<!DOCTYPE html>
 				color: white;
 				padding: 1em .75em;
 			}
-			
+
 			.content {
 				padding: 1em;
 			}
-			
+
 			.title {
 				margin-top: 1.5em;
 				font-size: .9em;
 				font-weight: bold;
 			}
-			
+
 			.content p,ul {
 				font-size: .85em;
 				margin-left: .5em;
 				margin-right: .5em;
 			}
-			
+
 			hr {
 				border-style: solid;
 				color: lightgray;
 			}
-			
+
 			em {
 				color: brown;
 			}
-			
+
 		</style>
 	</head>
 	<body>
@@ -351,7 +298,6 @@ echo -e "<!DOCTYPE html>
 						<li><a href='#action'>Before you do anything else</a></li>
 						<li><a href='#this-setup'>About this installation</a></li>
 						<li><a href='#passphrase-reset'>Changing a known or forgotten LUKS passphrase</a></li>
-						<li><a href='#reinstall'>Reinstall, preserving the home partition</a></li>
 					</ul>
 				</div>
 				<hr/>
@@ -366,13 +312,11 @@ echo -e "<!DOCTYPE html>
 						<li>LUKS.key <em>(exists only if you created a key file)</em></li>
 						<li>LUKS.header</li>
 						<li>Change-LUKS-passphrase.sh</li>
-						<li>Reinstallation.sh</li>
 						<li>LUKS-README.html</li>
 					</ul>
 					<p>The LUKS.key file only exists if you opted to create a key file during setup. This file can be used to decrypt your system without a passphrase. There are tutorials online that document how this can be done, so I won't get into that here. At any rate, <em>anyone</em> who has a copy of this file will be able to decrypt your entire system! Guard it well!</p>
 					<p>The LUKS.header file is not as sensitive as some of the others since this is just the header information for your LUKS partition and can be easily generated without any special credentials. In the event that the LUKS header becomes corrupted, you can use this file to restore the headers. <em>Note that if you modify the key slots on your LUKS partition by changing or removing passphrases or key files, these headers may become invalid and a new copy of the LUKS partition header should be generated.</em></p>
 					<p>The Change-LUKS-passphrase.sh script exists to simplify changing your current decryption passphrase, or if you created a key file, to help you recover and create a new passphrase in the event that you forget your current passphrase. If you chose to create a key file, then it is embedded in this file which means that <em>anyone</em> who has a copy of this file will be able to decrypt your entire system! Guard it well! If you did not create a key file, this file is not sensitive.</p>
-					<p>The Reinstallation.sh exists to facilitate operating system reinstallation using the existing ecryption and partitions. If you chose to create a key file, then it is embedded in this file which means that <em>anyone</em> who has a copy of this file will be able to decrypt your entire system! Guard it well! If you did not create a key file, this file is not sensitive. This script enables you to perform a clean Ubuntu installation while keeping your /home partition intact and maintaining the existing encryption.</p>
 					<p>The LUKS-README.html file (this file you're reading) is not at all sensitive and can be left on this system, but you may want to keep a copy elsewhere in the event that you need to refer to it and are unable to boot into your system to open it.</p>
 					<p></p>
 				</div>
@@ -393,112 +337,11 @@ echo -e "<!DOCTYPE html>
 					<p>If you just want to change your LUKS passphrase, copy the Change-LUKS-passphrase.sh script back over to your computer and run it. If you did not create a key file during setup you'll be prompted to change your LUKS passphrase using your current passphrase. If you created a key file during setup, you will simply need to provide a new passphrase, and the key file will be used to bypass the need to enter the current passphrase.</p>
 					<p>In the event that you have forgotten your LUKS passphrase <em>and</em> you created a key file, fear not! Get a Live Ubuntu USB/DVD and boot from it, selecting the option to try Ubuntu without installing. Once you're at the desktop, simply copy the Change-LUKS-passphrase.sh script over and run it. In either case, you'll be prompted for a new LUKS passphrase. Upon entering a new passphrase, the embedded key file will be used to remove your old passphrase and add the new one. Then reboot and decrypt your system with the new passphrase you created.</p>
 				</div>
-				<div class='section'><a name='reinstall' />
-					<div class='title'>Reinstall, preserving the home partition</div>
-					<p>If you're looking to reinstall your system or just to perform a fresh install, preserving your home partition, it's possible!  Basically, the LUKS partition must be unlocked. Then the system must be installed (without formatting /home). Finally, /etc/crypttab needs to be created and the initramfs updated.</p>
-					<p>The Reinstallation.sh script that was generated and saved to your desktop does just this. Simply boot from your installation medium, copy over and execute the Reinstallation.sh script, and follow the prompts. When you finish, you should be able to boot into your newly installed system with all of your home partition files still intact.</p>
-				</div>
 			</div>
 		</div>
 	</body>
 </html>" > "$dest/LUKS-README.html"
 
-# save a copy of the reinstallation script to the installed system
-cat << EOF > "$dest/Reinstallation.sh"
-#!/bin/bash
-# desc: unlock LUKS partition for reinstallation and fix boot files post reinstallation
-
-clear
-if [ "\$(whoami)" != "root" ]; then
-	echo "Restarting with sudo"
-	sudo bash \$0
-	exit
-fi
-
-isEFI() {
-	mount | grep -qi efi && return 0 || return 1
-}
-
-extractPayload() {
-	header="#----------PAYLOAD----------#"
-	startLine=\$(grep -P "^\$header" -n \$0 | cut -f1 -d:)
-	startByte=\$(head -n \$startLine "\$0" | wc -c)
-	dd if="\$0" bs=\$startByte skip=1 2>/dev/null | base64 -d > "\$keyfile" 2> /dev/null
-	[ \$(du "\$keyfile" | cut -f1) -eq 0 ] && return 1 || return 0
-}
-
-hasKeyfile() {
-	cryptsetup luksDump $luksPart | grep -q "Key Slot 0: ENABLED"
-}
-
-keyfile=/tmp/LUKS.key
-
-# decrypt LUKS partition
-echo -n "Decrypting LUKS partition ... "
-if hasKeyfile && extractPayload; then
-	cryptsetup open $luksPart ${cryptMapper} -d "\$keyfile"
-	echo -e "${green}done${normalText}"
-else
-	echo "waiting for passphrase"
-	read -sp "LUKS encryption passphrase: " luksPass && echo
-	echo -n "\$luksPass" | cryptsetup open $luksPart ${cryptMapper} || exit
-	echo "LUKS partition successfully decrypted"
-fi
-
-# backup existing crypttab
-echo -n "Backing up existing crypttab ... "
-while :
-do
-	[ -e /dev/vg0/root ] && break
-	sleep .1
-done
-mount /dev/vg0/root /mnt
-cp /mnt/etc/crypttab /tmp
-umount /mnt
-echo -e "${green}done${normalText}"
-
-# stage one complete; pause and wait for user to perform installation
-echo -e "\n\nAt this point, you should KEEP THIS WINDOW OPEN and start the installation \nprocess. When you reach the \"Installation type\" page, select \"Something else\" \nand continue to manual partition setup, selecting the option to format \npartitions when available (except /home).\n  ${bootPart} should be used as ext2 for /boot\n\$(isEFI && echo "  ${efiPart} should be used as EFI System Partition\n")  /dev/mapper/vg0-home should be used as ext4 for /home (DO NOT FORMAT)\n  /dev/mapper/vg0-root should be used as ext4 for /\n  $disk should be selected as the \"Device for boot loader installation\""
-echo
-read -sp "After installation, once you've chosen the option to continue testing, press    [Enter] in this window." && echo
-
-# mount stuff for chroot
-echo -n "Mounting the installed system ... "
-mount /dev/vg0/root /mnt
-mount /dev/vg0/home /mnt/home
-mount ${bootPart} /mnt/boot
-isEFI && mount ${efiPart} /mnt/boot/efi
-mount --bind /dev /mnt/dev
-mount --bind /run/lvm /mnt/run/lvm
-echo -e "${green}done${normalText}"
-
-# create crypttab entry
-echo -n "Restoring crypttab ... "
-mv /tmp/crypttab /mnt/etc/crypttab
-chmod 600 /mnt/etc/crypttab
-echo -e "${green}done${normalText}"
-
-# chroot and update the boot files
-echo "Updating your boot files:"
-echo '#!/bin/bash
-mount -t proc proc /proc
-mount -t sysfs sys /sys
-mount -t devpts devpts /dev/pts
-update-initramfs -k all -c' > /mnt/boot-update.sh
-chmod +x /mnt/boot-update.sh
-chroot /mnt "./boot-update.sh"
-rm /mnt/boot-update.sh
-
-shred -uzn3 "\$keyfile" 2> /dev/null
-echo
-echo "All finished!"
-read -sp "Press [Enter] to reboot" && echo
-reboot
-
-exit
-#----------PAYLOAD----------#
-$(base64 "$keyfile" 2> /dev/null)
-EOF
 
 # save a copy of the passphrase change script to the desktop
 cat << EOF > "$dest/Change-LUKS-passphrase.sh"
