@@ -205,9 +205,9 @@ homeSpace=$(bc <<< "$(vgdisplay --units b | grep Free | awk '{print $7}') * $(tr
 echo -n "  Creating ${homeSpace} home logical volume ... "
 lvcreate -n home -l +${home}free vg0 > /dev/null 2>&1 && echo -e "${green}done${normalText}" || echo -e "${red}failed${normalText}"
 
-cryptsetup close vg0-home
-cryptsetup close vg0-root
-cryptsetup close sda3_crypt
+#cryptsetup close vg0-home
+#cryptsetup close vg0-root
+#cryptsetup close sda3_crypt
 
 # stage one complete; pause and wait for user to perform installation
 echo -e "${yellow}${boldText}\n\nAt this point, you should KEEP THIS WINDOW OPEN and start the installation \nprocess. When you reach the \"Installation type\" page, select \"Something else\" \nand continue to manual partition setup.\n  ${bootPart} should be used as ext2 for /boot\n$(isEFI && echo "  ${efiPart} should be used as EFI System Partition\n")  /dev/mapper/vg0-home should be used as ext4 for /home\n  /dev/mapper/vg0-root should be used as ext4 for /\n  $disk should be selected as the \"Device for boot loader installation\"${normalText}"
