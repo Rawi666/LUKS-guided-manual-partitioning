@@ -98,10 +98,12 @@ parted $disk mktable $tableType > /dev/null 2>&1
 # get information about desired sizes
 totalRAM=$(cat /proc/meminfo | head -n1 | grep -oP "\d+.*" | tr -d ' B' | tr 'a-z' 'A-Z' | numfmt --from iec --to iec --format "%.f")
 read -p "Size for /boot [1G]: " boot
-isEFI && read -p "Size for /boot/efi [100M]: " efi
+isEFI && read -p "Size for /boot/efi [300M]: " efi
 read -p "Size for LVM [remaining disk space]: " lvm
 read -p "Size for / (root) in LVM [32G]: " root
 read -p "Percent of remaining LVM space to use for /home [100%]: " home
+read -p "Name of volume group [vg0]: " vgName
+vgName=${vgName:-vg0}
 echo
 while :
 do
@@ -114,14 +116,14 @@ do
 echo "passphrases didn't match or passphrase was blank! Try again"
 done
 echo  -e 'In addition to the passphrase you provided, a keyfile can be generated that can \nalso be used for decryption. It is STRONGLY RECOMMENDED that you create this \nfile and store it in a secure location to be used in the event that you ever \nforget your passphrase!\n'
-read -p "Key file size in bytes, or 'none' to prevent key file creation [512]: " keyfileSize
-keyfileSize=${keyfileSize:-512}
+read -p "Key file size in bytes (eg. 512), or 'none' to prevent key file creation [none]: " keyfileSize
+keyfileSize=${keyfileSize:-none}
 keyfile=/tmp/LUKS.key
 hasKeyfile && dd if=/dev/urandom of="${keyfile}" bs=${keyfileSize} count=1 2> /dev/null
 
 clear
 # fill in the blanks with default values
-parts="efi=100M boot=1G lvm=-1MB root=32G home=100%"
+parts="efi=300M boot=1G lvm=-1MB root=32G home=100%"
 for part in $parts
 do
 	name=$(cut -f1 -d= <<< $part)
@@ -178,11 +180,13 @@ bootPart=$(getDiskPartitionByNumber 1)
 isEFI && efiPart=$(getDiskPartitionByNumber 2)
 
 # setup LUKS encryption
+read -p "\nWhat value do you want to set in --iter-time parameter in luksFormat? (in milliseconds, default 2000): " iterTime
+iterTime=${iterTime:-2000}
 echo "Setting up encryption:"
 isEFI && luksPart=$(getDiskPartitionByNumber 3) || luksPart=$(getDiskPartitionByNumber 2)
 cryptMapper="${luksPart/\/dev\/}_crypt"
 echo -en "  Encrypting ${luksPart} with your passphrase ... "
-echo -n "${luksPass}" | cryptsetup luksFormat -c aes-xts-plain64 -h sha512 -s 256 --iter-time 5000 --use-random -S 1 -d - ${luksPart}
+echo -n "${luksPass}" | cryptsetup luksFormat -c aes-xts-plain64 -h sha512 -s 256 --iter-time ${iterTime} --use-random -S 1 -d - ${luksPart}
 echo -e "${green}done${normalText}"
 if hasKeyfile; then
 	echo -e "  ${boldText}We're going to need some random data for this next step. If it takes long, try  moving the mouse around or typing on the keyboard in a different window.${normalText}"
@@ -198,19 +202,46 @@ echo -n "$luksPass" | cryptsetup luksOpen ${luksPart} ${cryptMapper} && echo -e 
 # setup LVM and create logical partitions
 echo "Setting up LVM:"
 pvcreate /dev/mapper/${cryptMapper} > /dev/null 2>&1
-vgcreate vg0 /dev/mapper/${cryptMapper} > /dev/null 2>&1
+vgcreate ${vgName} /dev/mapper/${cryptMapper} > /dev/null 2>&1
 echo -n "  Creating ${root} root logical volume ... "
-lvcreate -n root -L ${root} vg0 > /dev/null 2>&1 && echo -e "${green}done${normalText}" || echo -e "${red}failed${normalText}"
+lvcreate -n root -L ${root} ${vgName} > /dev/null 2>&1 && echo -e "${green}done${normalText}" || echo -e "${red}failed${normalText}"
 homeSpace=$(bc <<< "$(vgdisplay --units b | grep Free | awk '{print $7}') * $(tr -d '%' <<< $home) / 100" | numfmt --to=iec)
 echo -n "  Creating ${homeSpace} home logical volume ... "
-lvcreate -n home -l +${home}free vg0 > /dev/null 2>&1 && echo -e "${green}done${normalText}" || echo -e "${red}failed${normalText}"
+lvcreate -n home -l +${home}free ${vgName} > /dev/null 2>&1 && echo -e "${green}done${normalText}" || echo -e "${red}failed${normalText}"
 
-#cryptsetup close vg0-home
-#cryptsetup close vg0-root
-#cryptsetup close sda3_crypt
+read -p "Do you want to format the partitions now? [Y/n]: " shouldFormat
+shouldFormat=${shouldFormat:-y}
+if [[ "$shouldFormat" =~ ^[yY]$ ]]; then
+	# format partitions
+	echo -n "  Formatting ${bootPart} as ext4 ... "
+	mkfs.ext4 ${bootPart} > /dev/null 2>&1 && echo -e "${green}done${normalText}" || echo -e "${red}failed${normalText}"
+	if isEFI; then
+		echo -n "  Formatting ${efiPart} as FAT32 ... "
+		mkfs.fat -F 32 ${efiPart} > /dev/null 2>&1 && echo -e "${green}done${normalText}" || echo -e "${red}failed${normalText}"
+	fi
+	echo -n "  Formatting /dev/mapper/${vgName}-root as ext4 ... "
+	mkfs.ext4 /dev/mapper/${vgName}-root > /dev/null 2>&1 && echo -e "${green}done${normalText}" || echo -e "${red}failed${normalText}"
+	echo -n "  Formatting /dev/mapper/${vgName}-home as ext4 ... "
+	mkfs.ext4 /dev/mapper/${vgName}-home > /dev/null 2>&1 && echo -e "${green}done${normalText}" || echo -e "${red}failed${normalText}"
+else
+	echo "Skipping partition formatting."
+fi
+
+read -p "Do you want to close the LUKS LVM partition now? [y/N]: " shouldClose
+shouldClose=${shouldClose:-n}
+if [[ "$shouldClose" =~ ^[yY]$ ]]; then
+	echo -n "  Closing ${vgName}-home... "
+	cryptsetup close "${vgName}-home" > /dev/null 2>&1 && echo -e "${green}done${normalText}" || echo -e "${red}failed${normalText}"
+	echo -n "  Closing ${vgName}-root... "
+	cryptsetup close "${vgName}-root" > /dev/null 2>&1 && echo -e "${green}done${normalText}" || echo -e "${red}failed${normalText}"
+	echo -n "  Deactivating volume group ${vgName}... "
+	vgchange -an ${vgName} > /dev/null 2>&1 && echo -e "${green}done${normalText}" || echo -e "${red}failed${normalText}"
+	echo -n "  Closing ${cryptMapper} LUKS partition ... "
+	cryptsetup close ${cryptMapper} > /dev/null 2>&1 && echo -e "${green}done${normalText}" || echo -e "${red}failed${normalText}"
+fi
 
 # stage one complete; pause and wait for user to perform installation
-echo -e "${yellow}${boldText}\n\nAt this point, you should KEEP THIS WINDOW OPEN and start the installation \nprocess. When you reach the \"Installation type\" page, select \"Something else\" \nand continue to manual partition setup.\n  ${bootPart} should be used as ext4 for /boot\n$(isEFI && echo "  ${efiPart} should be used as EFI System Partition\n")  /dev/mapper/vg0-home should be used as ext4 for /home\n  /dev/mapper/vg0-root should be used as ext4 for /\n  $disk should be selected as the \"Device for boot loader installation\"${normalText}"
+echo -e "${yellow}${boldText}\n\nAt this point, you should KEEP THIS WINDOW OPEN and start the installation \nprocess. When you reach the \"Installation type\" page, select \"Something else\" \nand continue to manual partition setup.\n  ${bootPart} should be used as ext4 for /boot\n$(isEFI && echo "  ${efiPart} should be used as EFI System Partition\n")  /dev/mapper/${vgName}-home should be used as ext4 for /home\n  /dev/mapper/${vgName}-root should be used as ext4 for /\n  $disk should be selected as the \"Device for boot loader installation\"${normalText}"
 echo
 echo -e "${boldText}After installation, once you've chosen the option to continue testing, press     [Enter] in this window.${normalText}"
 read -s && echo
