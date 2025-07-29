@@ -180,7 +180,8 @@ bootPart=$(getDiskPartitionByNumber 1)
 isEFI && efiPart=$(getDiskPartitionByNumber 2)
 
 # setup LUKS encryption
-read -p "\nWhat value do you want to set in --iter-time parameter in luksFormat? (in milliseconds, default 2000): " iterTime
+echo ""
+read -p "What value do you want to set in --iter-time parameter in luksFormat? (in milliseconds, default 2000): " iterTime
 iterTime=${iterTime:-2000}
 echo "Setting up encryption:"
 isEFI && luksPart=$(getDiskPartitionByNumber 3) || luksPart=$(getDiskPartitionByNumber 2)
