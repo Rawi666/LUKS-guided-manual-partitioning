@@ -79,12 +79,22 @@ bounds() {
 }
 
 isEFI() {
+	# Prefer firmware check; mount-based detection is unreliable in some Live sessions
+	[ -d /sys/firmware/efi ] && return 0
 	mount | grep -qi efi && return 0 || return 1
 }
 
 hasKeyfile() {
 	[ "${keyfileSize,,}" == "none" ] && return 1 || return 0
 }
+
+# This variant creates only an EFI System Partition (for /efi) plus encrypted LUKS->LVM
+# volumes for / and /home (no separate /boot partition).
+if ! isEFI; then
+	echo -e "ERROR: UEFI firmware was not detected.\n\nThis script is configured for UEFI installs (ESP mounted at /efi) and does not\ncreate a separate unencrypted /boot partition.\n\nReboot your Live media in UEFI mode and re-run this script."
+	read -p "Press [Enter] to exit." opt
+	exit 1
+fi
 
 # wipe the disk partition info and create new gpt partition table
 dd if=/dev/zero of=$disk bs=1M count=10 2> /dev/null
@@ -97,8 +107,7 @@ parted $disk mktable $tableType > /dev/null 2>&1
 
 # get information about desired sizes
 totalRAM=$(cat /proc/meminfo | head -n1 | grep -oP "\d+.*" | tr -d ' B' | tr 'a-z' 'A-Z' | numfmt --from iec --to iec --format "%.f")
-read -p "Size for /boot [1G]: " boot
-isEFI && read -p "Size for /boot/efi [300M]: " efi
+read -p "Size for /efi [300M]: " efi
 read -p "Size for LVM [remaining disk space]: " lvm
 read -p "Size for / (root) in LVM [32G]: " root
 read -p "Percent of remaining LVM space to use for /home [100%]: " home
@@ -123,11 +132,10 @@ hasKeyfile && dd if=/dev/urandom of="${keyfile}" bs=${keyfileSize} count=1 2> /d
 
 clear
 # fill in the blanks with default values
-parts="efi=300M boot=1G lvm=-1MB root=32G home=100%"
+parts="efi=300M lvm=-1MB root=32G home=100%"
 for part in $parts
 do
 	name=$(cut -f1 -d= <<< $part)
-	[ "$name" == "efi" ] && ! isEFI && continue
 	[ ${!name} ] || eval "${part}"
 done
 grep -q "%" <<< ${home} || home="${home}%"
@@ -135,13 +143,12 @@ grep -q "%" <<< ${home} || home="${home}%"
 # create physical partitions
 clear
 offset="1M"	#offset for first partition
-physicalParts="boot:ext4 efi:fat16 lvm"
+physicalParts="efi:fat16 lvm"
 index=$(bytes $offset)
 for part in ${physicalParts}
 do
 	name=$(cut -f1 -d: <<< $part)
 	type=$(awk -F ':' '{print $2}' <<< $part)
-	[ "$name" == "efi" ] && ! isEFI && continue
 	if [ "${!name}" == "-1MB" ]; then
 		echo -n "Creating $name partition that uses remaining disk space... "
 	else
@@ -176,15 +183,18 @@ getDiskPartitionByNumber() {
 	echo "$part"
 }
 
-bootPart=$(getDiskPartitionByNumber 1)
-isEFI && efiPart=$(getDiskPartitionByNumber 2)
+efiPart=$(getDiskPartitionByNumber 1)
+
+# Mark the EFI partition as ESP (best-effort; different parted versions use different flags)
+parted $disk set 1 esp on > /dev/null 2>&1 || true
+parted $disk set 1 boot on > /dev/null 2>&1 || true
 
 # setup LUKS encryption
 echo ""
 read -p "What value do you want to set in --iter-time parameter in luksFormat? (in milliseconds, default 2000): " iterTime
 iterTime=${iterTime:-2000}
 echo "Setting up encryption:"
-isEFI && luksPart=$(getDiskPartitionByNumber 3) || luksPart=$(getDiskPartitionByNumber 2)
+luksPart=$(getDiskPartitionByNumber 2)
 cryptMapper="${luksPart/\/dev\/}_crypt"
 echo -en "  Encrypting ${luksPart} with your passphrase ... "
 echo -n "${luksPass}" | cryptsetup luksFormat -c aes-xts-plain64 -h sha512 -s 256 --iter-time ${iterTime} --use-random -S 1 -d - ${luksPart}
@@ -214,12 +224,8 @@ read -p "Do you want to format the partitions now? [Y/n]: " shouldFormat
 shouldFormat=${shouldFormat:-y}
 if [[ "$shouldFormat" =~ ^[yY]$ ]]; then
 	# format partitions
-	echo -n "  Formatting ${bootPart} as ext4 ... "
-	mkfs.ext4 ${bootPart} > /dev/null 2>&1 && echo -e "${green}done${normalText}" || echo -e "${red}failed${normalText}"
-	if isEFI; then
-		echo -n "  Formatting ${efiPart} as FAT32 ... "
-		mkfs.fat -F 32 ${efiPart} > /dev/null 2>&1 && echo -e "${green}done${normalText}" || echo -e "${red}failed${normalText}"
-	fi
+	echo -n "  Formatting ${efiPart} as FAT32 ... "
+	mkfs.fat -F 32 ${efiPart} > /dev/null 2>&1 && echo -e "${green}done${normalText}" || echo -e "${red}failed${normalText}"
 	echo -n "  Formatting /dev/mapper/${vgName}-root as ext4 ... "
 	mkfs.ext4 /dev/mapper/${vgName}-root > /dev/null 2>&1 && echo -e "${green}done${normalText}" || echo -e "${red}failed${normalText}"
 	echo -n "  Formatting /dev/mapper/${vgName}-home as ext4 ... "
@@ -242,7 +248,7 @@ if [[ "$shouldClose" =~ ^[yY]$ ]]; then
 fi
 
 # stage one complete; pause and wait for user to perform installation
-echo -e "${yellow}${boldText}\n\nAt this point, you should KEEP THIS WINDOW OPEN and start the installation \nprocess. When you reach the \"Installation type\" page, select \"Something else\" \nand continue to manual partition setup.\n  ${bootPart} should be used as ext4 for /boot\n$(isEFI && echo "  ${efiPart} should be used as EFI System Partition\n")  /dev/mapper/${vgName}-home should be used as ext4 for /home\n  /dev/mapper/${vgName}-root should be used as ext4 for /\n  $disk should be selected as the \"Device for boot loader installation\"${normalText}"
+echo -e "${yellow}${boldText}\n\nAt this point, you should KEEP THIS WINDOW OPEN and start the installation \nprocess. When you reach the \"Installation type\" page, select \"Something else\" \nand continue to manual partition setup.\n  ${efiPart} should be used as EFI System Partition for /efi\n  /dev/mapper/${vgName}-home should be used as ext4 for /home\n  /dev/mapper/${vgName}-root should be used as ext4 for /\n  $disk should be selected as the \"Device for boot loader installation\"${normalText}"
 echo
 echo -e "${boldText}After installation, once you've chosen the option to continue testing, press     [Enter] in this window.${normalText}"
 read -s && echo
@@ -335,7 +341,7 @@ echo -e "<!DOCTYPE html>
 				<hr/>
 				<div class='section'><a name='about-luks' />
 					<div class='title'>About LUKS</div>
-					<p>LUKS stands for Linux Unified Key Setup. It is the standard for disk encryption in Linux. It can be used to encrypt an entire disk, a partition, or a file container. In the case of full disk encryption (FDE) on Ubuntu, the disk is typically partitioned into two (non-EFI installation) or three (EFI installation) separate partitions. The partitions needed for booting are not encrypted as they contain the binaries necessary for performing decryption. The last partition is encrypted, and then LVM logical volumes are created within that partition for swap and root. To learn more about LUKS visit the <a href='https://gitlab.com/cryptsetup/cryptsetup'>LUKS homepage</a>.</p>
+					<p>LUKS stands for Linux Unified Key Setup. It is the standard for disk encryption in Linux. It can be used to encrypt an entire disk, a partition, or a file container. In UEFI full disk encryption (FDE) setups, an EFI System Partition (ESP) typically remains unencrypted so firmware and the boot loader can start. In this installation, the ESP contains the boot loader, which prompts for decryption and unlocks the encrypted LUKS partition. An LVM volume group is created inside the decrypted LUKS device to host the root and home filesystems. To learn more about LUKS visit the <a href='https://gitlab.com/cryptsetup/cryptsetup'>LUKS homepage</a>.</p>
 				</div>
 				<div class='section'><a name='action' />
 					<div class='title'>Before you do anything else</div>
@@ -354,7 +360,7 @@ echo -e "<!DOCTYPE html>
 				</div>
 				<div class='section'><a name='this-setup' />
 					<div class='title'>About this installation</div>
-					<p>The script you used to set up this encrypted installation configured everything mostly the same manner that the automated feature in the Ubuntu installer would have. The physical partitions are created as they would have been with the automated installer except that you were given the option of specifying custom sizes during setup. The encrypted partition itself uses a key size of 512 bytes rather than 256, and the hashing algorithm used is sha512 rather than sha256. The LUKS partition, once unlocked, contains an LVM physical volume that houses the swap, root, and home partitions. This is the same as what you would find with the automated installer except that the automated installer does not create a home partition, and of course, you were given the option of setting custom sizes for each of these partitions.</p>
+					<p>The script you used to set up this encrypted installation created a minimal UEFI-friendly layout: a small EFI System Partition (mounted at /efi) and a single encrypted LUKS partition for everything else. Once unlocked, the LUKS device contains an LVM physical volume and volume group that houses logical volumes for the root (/) and home (/home) filesystems. The LUKS format uses sha512 for hashing and the passphrase is stored in key slot 1.</p>
 					<p>LUKS encryption allows for multiple decryption keys. Any saved passphrase or key file can be used to decrypt a LUKS encrypted device or file. If you created a key file, your system has exactly two keys.</p>
 					<ul>
 						<li>Key slot 0: contains the key file created <em>(empty if no key file was created)</em></li>
