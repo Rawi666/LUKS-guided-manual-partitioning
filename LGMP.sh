@@ -107,7 +107,7 @@ parted $disk mktable $tableType > /dev/null 2>&1
 
 # get information about desired sizes
 totalRAM=$(cat /proc/meminfo | head -n1 | grep -oP "\d+.*" | tr -d ' B' | tr 'a-z' 'A-Z' | numfmt --from iec --to iec --format "%.f")
-read -p "Size for /efi [300M]: " efi
+read -p "Size for /efi [300M] (all UKI kernels take space): " efi
 read -p "Size for LVM [remaining disk space]: " lvm
 read -p "Size for / (root) in LVM [32G]: " root
 read -p "Percent of remaining LVM space to use for /home [100%]: " home
